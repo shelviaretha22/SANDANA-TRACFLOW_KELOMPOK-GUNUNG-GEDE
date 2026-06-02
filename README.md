@@ -116,8 +116,8 @@ Fitur di Reports:
 
 ## 📊 Status Dokumen
 
-| Status | Arti | Progress |
-|--------|------|----------|
+| Status | Arti | 
+|--------|------|
 | `active` | Dokumen aktif, dalam proses persetujuan 
 | `delay` | Ditunda (update manual oleh Sales) 
 | `payment` | Pekerjaan selesai, menunggu pembayaran 
