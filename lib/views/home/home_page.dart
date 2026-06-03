@@ -32,7 +32,8 @@ class _HomePageState extends State<HomePage> {
     final auth      = context.watch<AuthViewModel>();
     final home      = context.watch<HomeViewModel>();
     final user      = auth.currentUser;
-    final deptShort = user?.department.replaceAll(' Department', '') ?? '';
+    final deptShort =
+        user?.department.replaceAll(' Department', '') ?? '';
 
     return Scaffold(
       backgroundColor: AppColors.primary,
@@ -42,7 +43,8 @@ class _HomePageState extends State<HomePage> {
 
             // ── Header ────────────────────────────────────────────
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 20, vertical: 16),
               child: Row(
                 children: [
                   CircleAvatar(
@@ -62,15 +64,16 @@ class _HomePageState extends State<HomePage> {
                   ),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(Icons.notifications, color: Colors.white),
-                    onPressed: () =>
-                        Navigator.pushNamed(context, AppRoutes.notification),
+                    icon: const Icon(Icons.notifications,
+                        color: Colors.white),
+                    onPressed: () => Navigator.pushNamed(
+                        context, AppRoutes.notification),
                   ),
                 ],
               ),
             ),
 
-            // ── Status Cards Row ──────────────────────────────────
+            // ── Status Cards ──────────────────────────────────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(
@@ -104,12 +107,13 @@ class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 16),
 
-            // ── Content area (putih melengkung) ───────────────────
+            // ── Content area ──────────────────────────────────────
             Expanded(
               child: Container(
                 decoration: const BoxDecoration(
                   color: AppColors.background,
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                  borderRadius:
+                      BorderRadius.vertical(top: Radius.circular(24)),
                 ),
                 child: home.isLoading
                     ? const Center(child: CircularProgressIndicator())
@@ -119,7 +123,7 @@ class _HomePageState extends State<HomePage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
 
-                            // Donut Chart — pakai widget terpisah
+                            // Donut Chart
                             DonutChart(summary: home.statusSummary),
                             const SizedBox(height: 16),
 
@@ -134,22 +138,30 @@ class _HomePageState extends State<HomePage> {
                             ),
                             const SizedBox(height: 10),
 
-                            // Daftar kartu dokumen — pakai widget terpisah
-                            ...home.recentDocuments.map(
-                              (doc) => ProjectCard(document: doc),
-                            ),
-
-                            // Kalau kosong
+                            // Daftar kartu dokumen
+                            // progressValue diambil dari progressMap
+                            // supaya progress bar nyata sesuai TTD
                             if (home.recentDocuments.isEmpty)
                               const Center(
                                 child: Padding(
                                   padding: EdgeInsets.all(24),
                                   child: Text(
                                     'Belum ada dokumen.',
-                                    style: TextStyle(color: AppColors.grey),
+                                    style:
+                                        TextStyle(color: AppColors.grey),
                                   ),
                                 ),
-                              ),
+                              )
+                            else
+                              ...home.recentDocuments.map((doc) {
+                                final docId = doc['id'] as int;
+                                final progress =
+                                    home.progressMap[docId] ?? 0.0;
+                                return ProjectCard(
+                                  document: doc,
+                                  progressValue: progress,
+                                );
+                              }),
                           ],
                         ),
                       ),

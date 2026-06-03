@@ -15,11 +15,13 @@ class ReportsPage extends StatefulWidget {
 }
 
 class _ReportsPageState extends State<ReportsPage> {
-  Set<int> _myApprovedIds = {};  // doc_id yang sudah di-TTD user ini
-  Set<int> _myCreatedIds  = {};  // doc_id yang dibuat user ini
-  // doc_id BRD yang sudah ada minimal 1 orang approve
-  // → Sales tidak boleh hapus kalau ini berisi docId-nya
+  Set<int> _myApprovedIds      = {};
+  Set<int> _myCreatedIds       = {};
   Set<int> _brdPartiallyApproved = {};
+
+  // Map<docId, progress 0.0–1.0> dari approval nyata
+  Map<int, double> _progressMap = {};
+
   bool _loadingExtra = false;
 
   @override
@@ -48,9 +50,8 @@ class _ReportsPageState extends State<ReportsPage> {
         'WHERE approver_id = ? AND status = ?',
         [userId, 'approved'],
       );
-      final approved = approvedRows
-          .map((r) => r['document_id'] as int)
-          .toSet();
+      final approved =
+          approvedRows.map((r) => r['document_id'] as int).toSet();
 
       // Dokumen yang dibuat user ini
       final createdRows = await dbRaw.rawQuery(
@@ -59,23 +60,45 @@ class _ReportsPageState extends State<ReportsPage> {
       );
       final created = createdRows.map((r) => r['id'] as int).toSet();
 
-      // BRD yang sudah ada minimal 1 approval (partial/full)
-      // → Sales tidak boleh hapus BRD ini
+      // BRD yang sudah ada minimal 1 approval
       final partialRows = await dbRaw.rawQuery(
         "SELECT DISTINCT document_id FROM document_approvals "
         "WHERE status = 'approved' "
-        "AND document_id IN ("
-        "  SELECT id FROM documents WHERE type = 'brd'"
-        ")",
+        "AND document_id IN (SELECT id FROM documents WHERE type = 'brd')",
       );
-      final partialApproved = partialRows
-          .map((r) => r['document_id'] as int)
-          .toSet();
+      final partialApproved =
+          partialRows.map((r) => r['document_id'] as int).toSet();
+
+      // Hitung progress tiap dokumen dari approval nyata
+      final allDocs = await DBHelper.instance.getAllDocuments();
+      final pMap = <int, double>{};
+      for (final doc in allDocs) {
+        final docId  = doc['id'] as int;
+        final status = doc['status'] as String?;
+
+        if (status == 'done' || status == 'payment') {
+          pMap[docId] = 1.0;
+          continue;
+        }
+
+        final approvals =
+            await DBHelper.instance.getApprovalsByDocument(docId);
+        if (approvals.isEmpty) {
+          pMap[docId] = 0.0;
+        } else {
+          final total    = approvals.length;
+          final approved = approvals
+              .where((a) => a['status'] == 'approved')
+              .length;
+          pMap[docId] = approved / total;
+        }
+      }
 
       if (mounted) setState(() {
         _myApprovedIds        = approved;
         _myCreatedIds         = created;
         _brdPartiallyApproved = partialApproved;
+        _progressMap          = pMap;
         _loadingExtra         = false;
       });
     } catch (_) {
@@ -83,12 +106,6 @@ class _ReportsPageState extends State<ReportsPage> {
     }
   }
 
-  /// Aturan TTD yang berlaku:
-  ///   BRD          → Finance + Engineering
-  ///   Berita Acara → Finance saja
-  ///   Invoice      → Sales saja
-  ///
-  /// Return: 'see_details' | 'waiting' | 'sign' | 'update'
   String _buttonType(Map<String, dynamic> doc, String dept) {
     final type      = doc['type'] as String?;
     final status    = doc['status'] as String?;
@@ -96,13 +113,9 @@ class _ReportsPageState extends State<ReportsPage> {
     final isMine    = _myCreatedIds.contains(docId);
     final hasMySign = _myApprovedIds.contains(docId);
 
-    // Status done → selesai semua → SEE DETAILS
     if (status == 'done') return 'see_details';
-
-    // Sudah TTD → SEE DETAILS (tidak bisa TTD lagi)
     if (hasMySign) return 'see_details';
 
-    // Apakah user ini boleh TTD dokumen ini?
     final bool canSign;
     if (type == 'brd') {
       canSign = dept == 'Finance Department' ||
@@ -115,18 +128,12 @@ class _ReportsPageState extends State<ReportsPage> {
       canSign = false;
     }
 
-    // Dokumen buatan sendiri → WAITING
     if (isMine) return 'waiting';
-
-    // Boleh TTD → TANDA TANGAN
     if (canSign) return 'sign';
-
-    // Tidak punya aksi (misal Sales lihat Berita Acara orang lain) → SEE DETAILS
     return 'see_details';
   }
 
-  // ── Helpers warna & label ─────────────────────────────────────────
-
+  // ── Warna & label ────────────────────────────────────────────────
   Color _cardColor(String? type) {
     switch (type) {
       case 'brd':          return const Color(0xFF1A3A6B);
@@ -164,24 +171,15 @@ class _ReportsPageState extends State<ReportsPage> {
     }
   }
 
-  // Progress 100% kalau done
-  double _progressValue(String? s) {
-    switch (s) {
-      case 'active':  return 0.5;
-      case 'delay':   return 0.3;
-      case 'done':    return 1.0; // 100%
-      case 'payment': return 0.8;
-      default:        return 0.0;
-    }
-  }
-
-  String _statusLabel(String? s) {
-    switch (s) {
-      case 'active':  return 'PROGRESS: 0%';
-      case 'delay':   return 'DELAYED';
-      case 'done':    return 'COMPLETED ✓';
-      case 'payment': return 'PAYMENT: BELUM LUNAS';
-      default:        return '';
+  /// Label progress dengan persentase NYATA dari approval
+  String _progressLabel(String? status, double progress) {
+    final pct = (progress * 100).round();
+    switch (status) {
+      case 'active':  return 'PROGRESS: $pct%';
+      case 'delay':   return 'DELAYED — $pct%';
+      case 'done':    return 'COMPLETED ✓ — 100%';
+      case 'payment': return 'PAYMENT: BELUM LUNAS — 100%';
+      default:        return '$pct%';
     }
   }
 
@@ -191,8 +189,6 @@ class _ReportsPageState extends State<ReportsPage> {
     if (type == 'invoice')      return 'Menunggu TTD Sales';
     return 'Menunggu Approve';
   }
-
-  // ── Dialog UPDATE ─────────────────────────────────────────────────
 
   Future<void> _showUpdateDialog(Map<String, dynamic> doc) async {
     String? selected = doc['status'];
@@ -225,7 +221,8 @@ class _ReportsPageState extends State<ReportsPage> {
           ElevatedButton(
             onPressed: () async {
               if (selected != null) {
-                await context.read<ReportViewModel>()
+                await context
+                    .read<ReportViewModel>()
                     .updateDocumentStatus(doc['id'] as int, selected!);
                 if (mounted) Navigator.pop(ctx);
               }
@@ -240,8 +237,6 @@ class _ReportsPageState extends State<ReportsPage> {
     );
   }
 
-  // ── Dialog DELETE ─────────────────────────────────────────────────
-
   Future<void> _showDeleteDialog(Map<String, dynamic> doc) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -249,10 +244,8 @@ class _ReportsPageState extends State<ReportsPage> {
         title: const Text('Hapus BRD?',
             style: TextStyle(
                 color: AppColors.delay, fontWeight: FontWeight.bold)),
-        content: Text(
-          '"${doc['title']}" akan dihapus permanen.',
-          style: const TextStyle(color: AppColors.grey, fontSize: 13),
-        ),
+        content: Text('"${doc['title']}" akan dihapus permanen.',
+            style: const TextStyle(color: AppColors.grey, fontSize: 13)),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -285,7 +278,6 @@ class _ReportsPageState extends State<ReportsPage> {
     final report    = context.watch<ReportViewModel>();
     final user      = auth.currentUser;
     final dept      = user?.department ?? '';
-    final userId    = user?.id ?? 0;
     final deptShort = dept.replaceAll(' Department', '');
 
     return Scaffold(
@@ -347,8 +339,8 @@ class _ReportsPageState extends State<ReportsPage> {
                       : RefreshIndicator(
                           onRefresh: _loadData,
                           child: ListView.builder(
-                            padding:
-                                const EdgeInsets.symmetric(horizontal: 16),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16),
                             itemCount: report.documents.length,
                             itemBuilder: (_, i) {
                               final doc        = report.documents[i];
@@ -359,17 +351,16 @@ class _ReportsPageState extends State<ReportsPage> {
                               final cardBg     = _cardColor(type);
                               final badgeColor = _typeBadgeColor(type);
 
+                              // Progress NYATA dari map
+                              final progress =
+                                  _progressMap[docId] ?? 0.0;
+
                               final btnType = _loadingExtra
                                   ? 'loading'
                                   : _buttonType(doc, dept);
 
-                              // DELETE muncul HANYA kalau:
-                              // - User adalah Sales
-                              // - Dokumen ini BRD
-                              // - Dokumen ini dibuat oleh Sales ini
-                              // - Status masih active
-                              // - BELUM ADA SATU PUN yang approve
-                              final isMine = _myCreatedIds.contains(docId);
+                              final isMine =
+                                  _myCreatedIds.contains(docId);
                               final hasAnyApproval =
                                   _brdPartiallyApproved.contains(docId);
                               final showDelete =
@@ -377,16 +368,19 @@ class _ReportsPageState extends State<ReportsPage> {
                                   type == 'brd' &&
                                   isMine &&
                                   status == 'active' &&
-                                  !hasAnyApproval; // ← kunci utama
+                                  !hasAnyApproval;
 
                               return Container(
-                                margin: const EdgeInsets.only(bottom: 14),
+                                margin:
+                                    const EdgeInsets.only(bottom: 14),
                                 decoration: BoxDecoration(
                                   color: cardBg,
-                                  borderRadius: BorderRadius.circular(14),
+                                  borderRadius:
+                                      BorderRadius.circular(14),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: cardBg.withValues(alpha: 0.5),
+                                      color: cardBg.withValues(
+                                          alpha: 0.5),
                                       blurRadius: 8,
                                       offset: const Offset(0, 4),
                                     ),
@@ -401,19 +395,23 @@ class _ReportsPageState extends State<ReportsPage> {
 
                                       // Badge tipe
                                       Container(
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 10, vertical: 3),
+                                        padding: const EdgeInsets
+                                            .symmetric(
+                                            horizontal: 10,
+                                            vertical: 3),
                                         decoration: BoxDecoration(
                                           color: badgeColor,
                                           borderRadius:
                                               BorderRadius.circular(6),
                                         ),
-                                        child: Text(_typeLabel(type),
-                                            style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 11,
-                                                fontWeight:
-                                                    FontWeight.bold)),
+                                        child: Text(
+                                          _typeLabel(type),
+                                          style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 11,
+                                              fontWeight:
+                                                  FontWeight.bold),
+                                        ),
                                       ),
                                       const SizedBox(height: 8),
 
@@ -421,7 +419,8 @@ class _ReportsPageState extends State<ReportsPage> {
                                       Text(doc['title'] ?? '-',
                                           style: const TextStyle(
                                               color: Colors.white,
-                                              fontWeight: FontWeight.bold,
+                                              fontWeight:
+                                                  FontWeight.bold,
                                               fontSize: 14)),
                                       const SizedBox(height: 2),
 
@@ -435,13 +434,15 @@ class _ReportsPageState extends State<ReportsPage> {
                                       // Assign & tanggal
                                       Row(
                                         mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
+                                            MainAxisAlignment
+                                                .spaceBetween,
                                         children: [
                                           Expanded(
                                             child: Text(
                                               'Assign to: ${doc['assign_to'] ?? '-'}',
                                               style: const TextStyle(
-                                                  color: Colors.white60,
+                                                  color:
+                                                      Colors.white60,
                                                   fontSize: 11),
                                               overflow:
                                                   TextOverflow.ellipsis,
@@ -449,62 +450,62 @@ class _ReportsPageState extends State<ReportsPage> {
                                           ),
                                           Text(doc['end_date'] ?? '',
                                               style: const TextStyle(
-                                                  color: Colors.white60,
+                                                  color:
+                                                      Colors.white60,
                                                   fontSize: 11)),
                                         ],
                                       ),
                                       const SizedBox(height: 10),
 
-                                      // Progress bar
+                                      // Progress bar — nilai NYATA
                                       ClipRRect(
                                         borderRadius:
                                             BorderRadius.circular(4),
                                         child: LinearProgressIndicator(
-                                          value: _progressValue(status),
-                                          backgroundColor: Colors.white24,
+                                          value: progress,
+                                          backgroundColor:
+                                              Colors.white24,
                                           color: sColor,
                                           minHeight: 6,
                                         ),
                                       ),
                                       const SizedBox(height: 6),
 
-                                      // Status label
-                                      Text(_statusLabel(status),
-                                          style: TextStyle(
-                                              color: sColor,
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 11)),
+                                      // Label + persentase nyata
+                                      Text(
+                                        _progressLabel(
+                                            status, progress),
+                                        style: TextStyle(
+                                            color: sColor,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 11),
+                                      ),
                                       const SizedBox(height: 10),
 
-                                      // ── TOMBOL AKSI ──────────────
+                                      // Tombol aksi
                                       if (btnType == 'loading')
                                         const Center(
                                           child: SizedBox(
                                             width: 20, height: 20,
-                                            child: CircularProgressIndicator(
-                                                color: Colors.white54,
-                                                strokeWidth: 2),
+                                            child:
+                                                CircularProgressIndicator(
+                                                    color:
+                                                        Colors.white54,
+                                                    strokeWidth: 2),
                                           ),
                                         )
-
                                       else if (btnType == 'see_details')
                                         _buildSeeDetails(doc)
-
                                       else if (btnType == 'sign')
                                         _buildSign(doc)
-
                                       else if (btnType == 'waiting')
                                         Column(children: [
                                           _buildWaiting(type),
-                                          // Tombol DELETE muncul di bawah
-                                          // tombol waiting kalau eligible
                                           if (showDelete) ...[
                                             const SizedBox(height: 8),
                                             _buildDelete(doc),
                                           ],
                                         ])
-
-                                      // Sales update status
                                       else
                                         _buildUpdate(doc),
                                     ],
@@ -521,18 +522,15 @@ class _ReportsPageState extends State<ReportsPage> {
     );
   }
 
-  // ── Widget tombol ─────────────────────────────────────────────────
-
   Widget _buildSeeDetails(Map<String, dynamic> doc) => SizedBox(
         width: double.infinity,
         child: ElevatedButton.icon(
           onPressed: () => Navigator.pushNamed(
-            context, AppRoutes.documentDetail, arguments: doc,
-          ).then((_) => _loadData()),
+                  context, AppRoutes.documentDetail, arguments: doc)
+              .then((_) => _loadData()),
           icon: const Icon(Icons.visibility, size: 16),
           label: const Text('SEE DETAILS',
-              style: TextStyle(
-                  fontSize: 12, fontWeight: FontWeight.bold)),
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.white24,
             foregroundColor: Colors.white,
@@ -548,12 +546,11 @@ class _ReportsPageState extends State<ReportsPage> {
         width: double.infinity,
         child: ElevatedButton.icon(
           onPressed: () => Navigator.pushNamed(
-            context, AppRoutes.documentDetail, arguments: doc,
-          ).then((_) => _loadData()),
+                  context, AppRoutes.documentDetail, arguments: doc)
+              .then((_) => _loadData()),
           icon: const Icon(Icons.draw, size: 16),
           label: const Text('TANDA TANGAN',
-              style: TextStyle(
-                  fontSize: 12, fontWeight: FontWeight.bold)),
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
           style: ElevatedButton.styleFrom(
             backgroundColor: AppColors.done,
             foregroundColor: Colors.white,
@@ -617,7 +614,8 @@ class _ReportsPageState extends State<ReportsPage> {
           onPressed: () => _showUpdateDialog(doc),
           icon: const Icon(Icons.edit, size: 16),
           label: const Text('UPDATE STATUS',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+              style: TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.bold)),
           style: OutlinedButton.styleFrom(
             foregroundColor: Colors.white,
             side: const BorderSide(color: Colors.white38),
@@ -639,14 +637,14 @@ class _LegendDot extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 10, height: 10,
-            decoration:
-                BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
+              width: 10,
+              height: 10,
+              decoration:
+                  BoxDecoration(color: color, shape: BoxShape.circle)),
           const SizedBox(width: 4),
           Text(label,
-              style: const TextStyle(
-                  color: AppColors.grey, fontSize: 11)),
+              style:
+                  const TextStyle(color: AppColors.grey, fontSize: 11)),
         ],
       );
 }
