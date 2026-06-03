@@ -4,7 +4,7 @@
 
 ---
 
-## 👥 Tim Pengembang
+## 👥 Kelompok Gunung Gede
 
 | Nama | NPM | Role |
 |------|-----|------|
